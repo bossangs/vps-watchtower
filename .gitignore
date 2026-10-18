@@ -1,0 +1,23 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Runtime database and backups
+data/
+*.db
+*.db-*
+backups/
+
+# Local Python artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Patches and transient exports
+*.patch
+*.diff
+*.log
+.DS_Store
