@@ -1,0 +1,39 @@
+services:
+  watchtower:
+    build: .
+    container_name: vps-watchtower
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "8080"
+    volumes:
+      - ./data:/data
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vps-watchtower-caddy
+    restart: unless-stopped
+    environment:
+      - DOMAIN=${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - watchtower
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,3 @@
+name,url,interval_seconds,selector,keywords,price_threshold,stock_keywords,channels
+"Example VPS plans",https://example.com/plans,300,,"restock,new plan",5.00,"in stock,available,有货","telegram,email"
+"Example announcements",https://example.com/status,600,main,"maintenance,outage",,"maintenance,incident","discord,webhook"

@@ -1,0 +1,10 @@
+services:
+  watchtower:
+    build: .
+    container_name: vps-watchtower
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
