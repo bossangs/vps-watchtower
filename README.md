@@ -1,4 +1,29 @@
-# VPS Watchtower
+# 1. 在 Debian 13 VPS 上确认 Docker Compose 已安装：
+docker --version && docker compose version
+如果提示命令不存在，先按 Docker 官方 Debian 安装步骤安装 Docker Engine 和 Compose 插件。
+2. 克隆项目并设置后台密码：
+apt update && apt install -y git openssl
+git clone https://github.com/bossangs/vps-watchtower.git
+cd vps-watchtower
+umask 077
+read -rsp '设置后台登录密码: ' ADMIN_PASSWORD; echo
+printf 'APP_SECRET=%s\nADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)" "$ADMIN_PASSWORD" > .env
+unset ADMIN_PASSWORD
+chmod 600 .env
+
+密码输入时不会显示，记好它，登录后台要用。
+3. 先临时测试：
+docker compose up -d --build
+docker compose ps
+
+浏览器打开 http://你的VPS公网IP:8080
+。如果只是测试，防火墙最好只允许你自己的 IP 访问 8080。
+4. 正式公网使用建议配域名 HTTPS。先把域名 A 记录指向 VPS，再执行下面一行，把域名换成自己的，并确保公网 TCP 80/443 已放行：
+echo 'DOMAIN=monitor.example.com' >> .env
+docker compose -f docker-compose.prod.yml up -d --build
+
+然后访问 https://monitor.example.com
+。这个版本还缺登录限速和完整 CSRF 防护，不建议裸露 8080 长期公网使用。完整中文说明在 DEPLOY_CN.md。VPS Watchtower
 
 Self-hosted multi-site monitoring and notification MVP for VPS provider websites.
 
