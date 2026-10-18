@@ -1,0 +1,63 @@
+diff --git a/DEPLOY_CN.md b/DEPLOY_CN.md
+index f51df99..4cc87f0 100644
+--- a/DEPLOY_CN.md
++++ b/DEPLOY_CN.md
+@@ -3,7 +3,7 @@
+ ## 1. 配置文件
+ 
+ - `.env.example`：环境变量模板。复制为 `.env` 后填写密钥与通知渠道。
+-- `docker-compose.yml`：直接通过 `http://服务器IP:8080` 测试用。
++- `docker-compose.yml`：直接访问测试用，宿主机从 `10000–65535` 中自动分配可用 TCP 端口，容器内仍使用 `8080`。
+ - `docker-compose.prod.yml` + `Caddyfile.example`：使用真实域名自动申请 HTTPS 证书的部署方式。
+ - `examples/sites-template.csv`：批量导入网站的 CSV 空模板。
+ - `examples/sites.csv`：CSV 示例（示例域名仅用于说明格式，请替换为真实网址）。
+@@ -30,7 +30,15 @@ docker compose up -d --build
+ docker compose logs -f
+ ```
+ 
+-访问 `http://服务器IP:8080`。如果启用了服务器防火墙，只有在你确认要直接暴露测试端口时才开放 TCP 8080。
++退出日志查看（Ctrl+C 不会停止后台容器），查询本次分配的宿主机端口：
++
++```bash
++docker compose port watchtower 8080
++```
++
++访问 `http://服务器IP:实际端口`，将“实际端口”替换为上述命令显示的端口号。输出中的 `0.0.0.0` 或 `[::]` 表示监听地址，浏览器中应使用服务器实际 IP。如果启用了防火墙或云安全组，只在确认需要直接访问时放行这个 TCP 端口，不要开放整个 `10000–65535` 范围。
++
++普通容器重启保留已分配端口；重新创建容器（例如执行 `docker compose down` 后再启动，或更新镜像）时端口可能改变，请重新查询并相应调整防火墙规则。随机端口不能替代强密码和 HTTPS。正式 HTTPS 部署的公网 `80/443` 和 Caddy 内部上游 `watchtower:8080` 保持不变。
+ 
+ ### 正式 HTTPS 部署
+ 
+diff --git a/README.md b/README.md
+index ecde302..d3e528f 100644
+--- a/README.md
++++ b/README.md
+@@ -20,7 +20,13 @@ Self-hosted multi-site monitoring and notification MVP for VPS provider websites
+    ```bash
+    docker compose up -d --build
+    ```
+-4. Open `http://YOUR_SERVER_IP:8080`.
++4. Docker automatically assigns an available host TCP port in the range `10000–65535`; the container still listens on `8080`. Find the assigned port:
++   ```bash
++   docker compose port watchtower 8080
++   ```
++5. Open `http://YOUR_SERVER_IP:ASSIGNED_PORT`, replacing `ASSIGNED_PORT` with the port printed above. Allow only that TCP port in your firewall/security group if direct access is needed; do not open the entire range. Docker may display `0.0.0.0` or `[::]` as the bind address; use your actual server IP in the browser.
++
++A normal container restart keeps its assigned port, but recreating the container (for example after `docker compose down` or an image update) may assign a different port. Run the port command again and update firewall rules as needed. Random ports are not a substitute for authentication or HTTPS. The separate production Caddy configuration continues to expose only its existing HTTP/HTTPS ports; its internal upstream remains `watchtower:8080`.
+ 
+ The first run creates a local SQLite database in `./data/watchtower.db`.
+ For public exposure, put it behind HTTPS/reverse proxy and restrict access with a firewall. This MVP has a shared admin password; set `ADMIN_PASSWORD` before exposing it.
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 8b6b611..5f76b28 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -5,6 +5,8 @@ services:
+     restart: unless-stopped
+     env_file: .env
+     ports:
+-      - "8080:8080"
++      - target: 8080
++        published: "10000-65535"
++        protocol: tcp
+     volumes:
+       - ./data:/data
