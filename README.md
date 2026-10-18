@@ -1,66 +1,53 @@
-apt install -y git openssl
-git clone https://github.com/bossangs/vps-watchtower.git
-cd vps-watchtower
-然后一条一条设置密码：
-umask 077
-read -rsp '设置后台登录密码: ' ADMIN_PASSWORD; echo
-输入密码时屏幕不会显示字符，输完按 Enter
-## Features
-- Web UI for adding/editing/pausing/deleting monitored URLs
-- Whole-page text diff or CSS selector extraction
-- Keyword triggers, basic price/stock heuristics, and configurable polling interval
-- SQLite persistence for sites, snapshots, events, and notification logs
-- Multi-channel notifications: Telegram, SMTP email, Discord webhook, generic webhook
-- Docker Compose deployment
-- CSV bulk import/export
+# VPS Watchtower
 
-> This is a practical MVP, not a turnkey commercial-grade crawler. Respect each site's terms, robots.txt, rate limits, and access controls. Do not use it to bypass login, CAPTCHA, or anti-bot protections. Dynamic JavaScript pages may need a separately configured browser collector.
+一个用于**私有部署**的网站内容变化监控 MVP：Flask 应用、SQLite 数据库、Docker Compose，可通过 Telegram、Email、Discord 和通用 Webhook 发送通知。
 
-## Quick start (Docker)
-1. Copy `.env.example` to `.env` and set `APP_SECRET` to a long random value.
-2. Optionally configure one or more notification channels in `.env`.
-3. Run:
-   ```bash
-   docker compose up -d --build
-   ```
-4. Open `http://YOUR_SERVER_IP:8080`.
+> 这是 MVP：使用 Flask 内置服务器，SSRF 防护并不完整。请仅在可信、受控环境部署，不要把它当作公网上的通用 URL 监控服务。
 
-The first run creates a local SQLite database in `./data/watchtower.db`.
-For public exposure, put it behind HTTPS/reverse proxy and restrict access with a firewall. This MVP has a shared admin password; set `ADMIN_PASSWORD` before exposing it.
+## 快速开始
 
-## Environment
-- `APP_SECRET`: session signing secret
-- `ADMIN_PASSWORD`: shared login password (required for login)
-- `DATABASE_PATH`: SQLite file path (default `/data/watchtower.db`)
-- `DEFAULT_INTERVAL`: default polling interval in seconds (300)
-- `REQUEST_TIMEOUT`: HTTP timeout in seconds (20)
-- `MAX_RESPONSE_BYTES`: max response body read (2 MB)
-- `USER_AGENT`: crawler user agent
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`, `SMTP_STARTTLS`
-- `DISCORD_WEBHOOK_URL`
-- `GENERIC_WEBHOOK_URL`
+```bash
+cp .env.example .env
+# 编辑 .env：至少设置 APP_SECRET、ADMIN_PASSWORD；按需配置通知变量
+chmod 600 .env
+mkdir -p data
+# 默认部署（不要与 prod 文件合并）
+sudo docker compose -f docker-compose.yml up -d --build
 
-## Monitoring configuration
-A site supports:
-- URL, name, interval seconds
-- CSS selector (optional; blank means whole page text)
-- comma-separated keywords (any keyword matching the new content triggers)
-- optional price threshold (alert if parsed price is below it)
-- optional stock keywords (e.g. `in stock,available,有货`)
-- notification channels selected per site
+sudo docker compose -f docker-compose.yml port watchtower 8080
+```
 
-The first successful check creates a baseline snapshot and does not send a change alert. Later checks create events when content changes or a configured trigger fires.
+默认 Compose 将容器 `8080/tcp` 发布到宿主机 `10000–65535/tcp` 中由 Docker 自动分配的一个空闲端口（不保证密码学随机）。该发布默认绑定主机所有接口。查询实际端口必须使用上面的命令；浏览器访问 `http://服务器IP:实际端口`（不要使用输出中的 `0.0.0.0` 或 `[::]` 作为访问地址）；重建后端口可能变化。**只放行查询到的实际端口**，并同步核对云安全组及 Docker `DOCKER-USER` 规则；端口分配本身不等于安全措施，也不要宣称它能替代认证、防火墙或 HTTPS。
 
-## GitHub deployment
-Push this directory to a GitHub repository. For a VPS, clone the repository and run Docker Compose. The included GitHub Actions workflow builds and publishes a Docker image to GHCR on pushes to `main`; configure the package visibility if you want it public.
+生产 HTTPS 部署必须单独使用生产文件，不能把两个 Compose 文件合并：
 
-## Notes / limitations
-- Price parsing is heuristic and can be wrong when a page contains multiple prices or currency conversions.
-- Stock detection relies on configured keywords and is site-specific.
-- CSS selectors use BeautifulSoup's SoupSieve support.
-- Line quality, BGP route, IP ownership, and Looking Glass checks should be added as separate data-source adapters; a normal webpage diff cannot establish network performance.
-- Add a reverse proxy, HTTPS, backups, and stronger user management before internet-facing production use.
+```bash
+sudo docker compose -f docker-compose.prod.yml up -d --build
+```
 
-## Full deployment configuration (Chinese)
-See `DEPLOY_CN.md`, `docker-compose.prod.yml`, and `Caddyfile.example` for the full configuration and HTTPS deployment steps. A blank 50-site CSV template is provided at `examples/sites-template.csv`.
+生产模式由 Caddy 监听 `80/443`，通过 `DOMAIN` 自动申请/续期 HTTPS，并将内部 `watchtower:8080` 反向代理；请先确认 DNS 指向服务器并放行 80、443。详见 [DEPLOY_CN.md](DEPLOY_CN.md)。
+
+## 配置与数据
+
+- `.env.example` 只包含空值或占位符；复制后编辑 `.env`，不要提交 `.env`。
+- `APP_SECRET`、`ADMIN_PASSWORD` 必须替换为高强度随机值；不要把监控 URL、秘密或数据库文件写入仓库。
+- 数据库默认持久化到 `./data/watchtower.db`；备份时保留 `data/` 与服务器上的 `.env`。
+- 源码当前读取的环境变量见 `.env.example`；数据库中的站点 URL、选择器和通知渠道仍由登录后的管理界面配置。
+
+## Telegram 汇总行为
+
+每次非空的到期检查周期、手动检查单站或“检查全部”都会发送**一条逻辑汇总**，汇总本轮结果与全部启用的 Telegram 站点：首次建立基线、内容未变、内容变化、错误；并标出本轮未检查站点的最新状态。超长消息会自动分段。Telegram 发送失败不会改变检查状态；其他已配置渠道仍按变化事件发送通知。
+
+## 离线单元测试
+
+测试会 mock HTTP 与通知发送，不会实际请求监控网站，也不会实际发送 Telegram/Email/Discord/Webhook：
+
+```bash
+# Debian 13 首次准备测试环境：sudo apt install -y python3 python3-venv
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m unittest -v
+```
+
+测试依赖安装需要网络；安装依赖后，测试本身完全离线。

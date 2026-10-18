@@ -125,6 +125,8 @@ def send_telegram(message):
     r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
                       json={"chat_id": chat, "text": message[:4000], "disable_web_page_preview": True}, timeout=15)
     r.raise_for_status()
+    if r.json().get("ok") is not True:
+        raise RuntimeError("Telegram API returned ok=false")
 
 def send_email(subject, message):
     host = os.getenv("SMTP_HOST")
@@ -155,10 +157,12 @@ def send_webhook(message, event):
 
 SENDERS = {"telegram": send_telegram, "email": send_email, "discord": send_discord}
 
-def notify(event_id, site, event_type, summary, details):
+def notify(event_id, site, event_type, summary, details, exclude_channels=()):
     message = f"[VPS Watchtower] {event_type}\n{site['name']}\n{site['url']}\n{summary}\n\n{details[:2500]}"
     channels = [x.strip().lower() for x in (site["channels"] or "").split(",") if x.strip()]
     for channel in channels:
+        if channel in exclude_channels:
+            continue
         try:
             if channel in SENDERS: SENDERS[channel](message)
             elif channel == "webhook": send_webhook(message, {"id": event_id, "type": event_type, "site": site["url"]})
@@ -187,7 +191,7 @@ def check_one(site_id):
                       (now(), "OK", site_id))
             if not previous:
                 log.info("Baseline created for site %s", site_id)
-                return
+                return "首次建立基线"
             old = previous["content"]
         changed = h != previous["content_hash"]
         keywords = [k.strip() for k in (site["keywords"] or "").split(",") if k.strip()]
@@ -209,13 +213,78 @@ def check_one(site_id):
                 cur = c.execute("INSERT INTO events(site_id,event_type,summary,details,created_at) VALUES(?,?,?,?,?)",
                                 (site_id, event_type, summary, details, now()))
                 eid = cur.lastrowid
-            notify(eid, site, event_type, summary, details)
+            # Telegram gets one full status report after the round, not duplicate alerts.
+            notify(eid, site, event_type, summary, details, exclude_channels=("telegram",))
+        return "内容变化" if changed else "内容未变"
     except Exception as e:
         msg = str(e)[:1000]
         with db() as c:
             c.execute("UPDATE sites SET last_checked=?,last_status=?,last_error=? WHERE id=?",
                       (now(), "ERROR", msg, site_id))
         log.exception("Check failed for site %s", site_id)
+        return "检查失败"
+
+def notify_status_report(checked_ids):
+    """Send every enabled Telegram site's latest status, even unchanged/errors."""
+    if not checked_ids:
+        return
+    with db() as c:
+        sites = [dict(row) for row in c.execute("SELECT * FROM sites WHERE enabled=1 ORDER BY id")]
+    sites = [s for s in sites if "telegram" in {
+        channel.strip().lower() for channel in (s["channels"] or "").split(",")
+    }]
+    if not sites:
+        return
+    header = f"[VPS Watchtower] 全站状态汇总\n汇总时间（UTC）：{now()}\n站点数：{len(sites)}"
+    blocks = []
+    for site in sites:
+        freshness = (f"本轮已检查：{checked_ids[site['id']]}" if site["id"] in checked_ids
+                     else "最近状态（本轮未检查）")
+        block = (f"{site['name'][:160]}\n{site['url'][:1000]}\n"
+                 f"状态：{site['last_status']} · {freshness}\n"
+                 f"最近检查（UTC）：{site['last_checked'] or '尚未检查'}")
+        if site["last_error"]:
+            block += f"\n错误：{site['last_error'][:500]}"
+        blocks.append(block)
+    # Keep complete site blocks together and leave room for the part counter.
+    parts, current = [], header
+    for block in blocks:
+        if len(current) + len(block) + 2 > 3500:
+            parts.append(current)
+            current = header
+        current += "\n\n" + block
+    parts.append(current)
+    details = "\n\n".join(blocks)
+    with db() as c:
+        eid = c.execute(
+            "INSERT INTO events(site_id,event_type,summary,details,created_at) VALUES(?,?,?,?,?)",
+            (sites[0]["id"], "全站状态汇总", f"{len(sites)} 个站点的最新状态", details, now())
+        ).lastrowid
+    sent = 0
+    try:
+        for index, message in enumerate(parts, 1):
+            send_telegram(f"{message}\n\n分段：{index}/{len(parts)}")
+            sent += 1
+        status, detail = "sent", f"{sent}/{len(parts)} parts sent"
+    except Exception:
+        # Do not store request exception URLs: they can contain the bot token.
+        status, detail = "failed", f"Telegram status report failed; {sent}/{len(parts)} parts sent"
+        log.warning("%s", detail)
+    with db() as c:
+        c.execute("INSERT INTO notifications(event_id,channel,status,detail,created_at) VALUES(?,?,?,?,?)",
+                  (eid, "telegram", status, detail, now()))
+
+def run_checks(site_ids):
+    """Caller owns check_lock so status snapshots cannot interleave between rounds."""
+    checked_ids = {}
+    for site_id in site_ids:
+        with db() as c:
+            if not c.execute("SELECT 1 FROM sites WHERE id=? AND enabled=1", (site_id,)).fetchone():
+                continue
+        result = check_one(site_id)
+        if result is not None:
+            checked_ids[site_id] = result
+    notify_status_report(checked_ids)
 
 def due_checks():
     if not check_lock.acquire(blocking=False): return
@@ -223,6 +292,7 @@ def due_checks():
         with db() as c:
             rows = c.execute("""SELECT id, interval_seconds, last_checked FROM sites WHERE enabled=1""").fetchall()
         current = time.time()
+        due_ids = []
         for row in rows:
             last = row["last_checked"]
             due = True
@@ -231,7 +301,8 @@ def due_checks():
                     last_ts = datetime.fromisoformat(last).timestamp()
                     due = current - last_ts >= max(60, int(row["interval_seconds"]))
                 except Exception: pass
-            if due: check_one(row["id"])
+            if due: due_ids.append(row["id"])
+        run_checks(due_ids)
     finally:
         check_lock.release()
 
@@ -373,14 +444,17 @@ def toggle_site(site_id):
 @app.route("/sites/<int:site_id>/check")
 @login_required
 def check_site(site_id):
-    check_one(site_id); flash("已执行检查；查看状态和事件列表确认结果。")
+    with check_lock:
+        run_checks([site_id])
+    flash("已执行检查并尝试推送全站状态；请查看事件列表确认发送结果。")
     return redirect(url_for("index"))
 
 @app.route("/check-all")
 @login_required
 def check_all():
-    with db() as c: ids = [x[0] for x in c.execute("SELECT id FROM sites WHERE enabled=1")]
-    for sid in ids: check_one(sid)
+    with check_lock:
+        with db() as c: ids = [x[0] for x in c.execute("SELECT id FROM sites WHERE enabled=1")]
+        run_checks(ids)
     flash(f"已触发 {len(ids)} 个站点检查。")
     return redirect(url_for("index"))
 
