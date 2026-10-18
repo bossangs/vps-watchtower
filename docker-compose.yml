@@ -1,12 +1,18 @@
 services:
   watchtower:
     build: .
-    container_name: vps-watchtower
     restart: unless-stopped
     env_file: .env
+    environment:
+      COOKIE_SECURE: "false"
     ports:
       - target: 8080
         published: "10000-65535"
+        host_ip: 127.0.0.1
         protocol: tcp
     volumes:
       - ./data:/data
+    read_only: true
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

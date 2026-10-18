@@ -1,22 +1,23 @@
 services:
   watchtower:
     build: .
-    container_name: vps-watchtower
     restart: unless-stopped
     env_file: .env
-    expose:
-      - "8080"
+    environment:
+      COOKIE_SECURE: "true"
+    expose: ["8080"]
     volumes:
       - ./data:/data
-    networks:
-      - internal
-
+    read_only: true
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [watchtower]
   caddy:
     image: caddy:2-alpine
-    container_name: vps-watchtower-caddy
     restart: unless-stopped
     environment:
-      - DOMAIN=${DOMAIN}
+      DOMAIN: ${DOMAIN}
     ports:
       - "80:80"
       - "443:443"
@@ -26,14 +27,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - watchtower
-    networks:
-      - internal
-
+      watchtower:
+        condition: service_healthy
+    networks: [watchtower]
 networks:
-  internal:
+  watchtower:
     driver: bridge
-
 volumes:
   caddy_data:
   caddy_config:

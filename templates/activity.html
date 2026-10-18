@@ -1,0 +1,1 @@
+<h2>库存动态</h2><div class="card">{% for e in events %}<p><strong>{{e.site_name}}</strong>{% if e.provider_name %} · {{e.provider_name}}{% endif %}<br>{{e.created_at}} · {{e.summary}}</p>{% else %}<p>暂无公开动态。</p>{% endfor %}</div>

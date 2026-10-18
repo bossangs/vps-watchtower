@@ -1,53 +1,65 @@
-# VPS Watchtower
+# VPS Watchtower 多用户版
 
-一个用于**私有部署**的网站内容变化监控 MVP：Flask 应用、SQLite 数据库、Docker Compose，可通过 Telegram、Email、Discord 和通用 Webhook 发送通知。
+一个可自行部署的 VPS 套餐目录与库存监控应用。使用原创中文界面、Flask、SQLite、单进程 Gunicorn 和 Docker Compose，不依赖第三方站点账户或素材。
 
-> 这是 MVP：使用 Flask 内置服务器，SSRF 防护并不完整。请仅在可信、受控环境部署，不要把它当作公网上的通用 URL 监控服务。
+## 已包含的功能
 
-## 快速开始
+- 公开套餐目录、独立商家页面、搜索、地区／商家／库存筛选、RAM／磁盘／流量筛选、分页与排序。价格比较必须同时指定币种和计费周期，避免把年费和月费混排。
+- 管理员维护商家名称、官网、介绍、关联套餐，以及通知中点击跳转的商家／购买链接。
+- 每个商家独立配置接收通知的 HTTPS Webhook，支持事件开关、HMAC 签名、防重复投递和发送审计；Webhook 地址不公开。
+- 用户注册、登录、退出、修改密码；账户和管理员权限分离，普通用户不能配置监控目标。
+- 套餐和商家订阅；每条订阅可暂停、设置事件类型及状态汇总，个人 Telegram 偏好还可统一关闭某类消息。
+- 共享 Telegram Bot，每个用户通过验证码验证自己的私聊 chat_id，支持测试消息、解绑、个人发送记录。
+- 保留原版 Telegram 全站状态汇总、自动分段、随机宿主端口分配、CSV 导入导出、Email／Discord／通用 Webhook 管理员通知。
+- 按 URL 和 CSS 选择器检查公开页面，记录基线与快照，识别补货、售罄、普通变化；完整快照只供管理员查看。
+- 兼容旧 SQLite：增量迁移，不删除旧站点、快照、事件和通知。旧监控默认不发布，需管理员审核后手动公开。
+
+这里的“订阅”是关注商家／套餐接收通知，**不包含收费套餐、支付或自动购买 VPS**。
+
+## 从哪里开始
+
+完整安装、HTTPS、原版升级、备份回滚及 Telegram 设置见 **[DEPLOY_CN.md](DEPLOY_CN.md)**。商家 Webhook 接口与验签说明见 **[WEBHOOK_CN.md](WEBHOOK_CN.md)**。
+
+常用页面：
+
+| 页面 | 用途 |
+|---|---|
+| `/catalog`、`/providers`、`/activity` | 公开目录、商家、库存动态 |
+| `/register`、`/login` | 注册、登录 |
+| `/account`、`/subscriptions` | 个人设置、订阅管理 |
+| `/account/telegram`、`/account/notifications` | 绑定与偏好、个人发送记录 |
+| `/admin` | 监控站点、检查、CSV、快照管理 |
+| `/admin/providers` | 商家设置及各商家的 Webhook 入口 |
+| `/events`、`/settings` | 管理员事件审计、系统通知配置状态 |
+| `/healthz` | 不含业务数据的健康检查 |
+
+## 最小运行约束
+
+必须设置不少于 32 字符的随机 `APP_SECRET`。`.env.example` 默认关闭注册；准备好后改为 `REGISTRATION_ENABLED=true`。管理员用交互式 CLI 显式创建，原版 `ADMIN_PASSWORD` 不再直接用于网页登录。
+
+生产部署只使用 `docker-compose.prod.yml`，启用 HTTPS 与 Secure Cookie；默认 `docker-compose.yml` 仅在宿主机 `127.0.0.1` 上发布随机端口，适合 SSH 隧道验收。两份文件**不要合并使用**。
+
+只能运行一个应用实例、一个 Gunicorn worker，不能横向扩容或启用重载，否则会重复启动嵌入式监控调度器。适合中小规模、管理员维护监控目录的部署；不是让所有用户任意提交 URL 的抓取平台。
+
+## 安全和行为边界
+
+密码使用 scrypt；会话通过数据库中的哈希令牌校验，可撤销；改密码会撤销所有旧会话。所有修改操作使用 POST 与 CSRF；有登录和注册限流、Telegram 验证限次与发送冷却、内容安全响应头。
+
+监控及商家 Webhook 会校验解析出的公网地址、固定连接 IP、保留 TLS 域名校验，拒绝本地／私网／云元数据目标；监控逐跳校验重定向，Webhook 不跟随重定向。不处理登录后的页面，不绕过 403、认证、验证码或反爬挑战。错误不会被当作售罄。
+
+库存依赖管理员设置的正向／售罄关键词，**不是官方库存接口**。售罄词优先；无法确定时记为 unknown，不伪造库存。价格为管理员维护的目录元数据，原 USD 阈值识别仍是保守文本启发式，并不自动换汇或保证结算价格。
+
+通知为尽力而为，不保证送达。个人事件及商家 Webhook 先登记 claim 防止重复发送；失败或进程中断不自动重试，避免重复触发商家业务。请在发送记录中检查 `failed`／`pending`。不要将 Webhook 直接绑定无幂等保护的购买或付款动作。
+
+本包不含真实监控网址、账号、Bot Token 或用户数据库；不包含 VPSDeer 品牌、图片或页面素材。功能参考仅限其公开的套餐／商家／库存动态模式。
+
+## 离线测试
 
 ```bash
-cp .env.example .env
-# 编辑 .env：至少设置 APP_SECRET、ADMIN_PASSWORD；按需配置通知变量
-chmod 600 .env
-mkdir -p data
-# 默认部署（不要与 prod 文件合并）
-sudo docker compose -f docker-compose.yml up -d --build
-
-sudo docker compose -f docker-compose.yml port watchtower 8080
-```
-
-默认 Compose 将容器 `8080/tcp` 发布到宿主机 `10000–65535/tcp` 中由 Docker 自动分配的一个空闲端口（不保证密码学随机）。该发布默认绑定主机所有接口。查询实际端口必须使用上面的命令；浏览器访问 `http://服务器IP:实际端口`（不要使用输出中的 `0.0.0.0` 或 `[::]` 作为访问地址）；重建后端口可能变化。**只放行查询到的实际端口**，并同步核对云安全组及 Docker `DOCKER-USER` 规则；端口分配本身不等于安全措施，也不要宣称它能替代认证、防火墙或 HTTPS。
-
-生产 HTTPS 部署必须单独使用生产文件，不能把两个 Compose 文件合并：
-
-```bash
-sudo docker compose -f docker-compose.prod.yml up -d --build
-```
-
-生产模式由 Caddy 监听 `80/443`，通过 `DOMAIN` 自动申请/续期 HTTPS，并将内部 `watchtower:8080` 反向代理；请先确认 DNS 指向服务器并放行 80、443。详见 [DEPLOY_CN.md](DEPLOY_CN.md)。
-
-## 配置与数据
-
-- `.env.example` 只包含空值或占位符；复制后编辑 `.env`，不要提交 `.env`。
-- `APP_SECRET`、`ADMIN_PASSWORD` 必须替换为高强度随机值；不要把监控 URL、秘密或数据库文件写入仓库。
-- 数据库默认持久化到 `./data/watchtower.db`；备份时保留 `data/` 与服务器上的 `.env`。
-- 源码当前读取的环境变量见 `.env.example`；数据库中的站点 URL、选择器和通知渠道仍由登录后的管理界面配置。
-
-## Telegram 汇总行为
-
-每次非空的到期检查周期、手动检查单站或“检查全部”都会发送**一条逻辑汇总**，汇总本轮结果与全部启用的 Telegram 站点：首次建立基线、内容未变、内容变化、错误；并标出本轮未检查站点的最新状态。超长消息会自动分段。Telegram 发送失败不会改变检查状态；其他已配置渠道仍按变化事件发送通知。
-
-## 离线单元测试
-
-测试会 mock HTTP 与通知发送，不会实际请求监控网站，也不会实际发送 Telegram/Email/Discord/Webhook：
-
-```bash
-# Debian 13 首次准备测试环境：sudo apt install -y python3 python3-venv
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m unittest -v
 ```
 
-测试依赖安装需要网络；安装依赖后，测试本身完全离线。
+安装依赖需要联网；测试使用临时数据库和 mock，不会抓取真实监控页面，也不会发送真实 Telegram／Email／Discord／Webhook。测试覆盖旧库重复迁移、库存转换、原版汇总、账户权限、CSRF、用户订阅隔离、Telegram 验证、商家签名与防 SSRF。验证范围及未执行项见 [TEST_RESULTS.md](TEST_RESULTS.md)。

@@ -1,10 +1,14 @@
 """Offline regression tests; no real HTTP requests or Telegram messages."""
+
 import os
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
 
 _TEMP = tempfile.TemporaryDirectory()
+os.environ.setdefault("APP_SECRET", "offline-test-secret-" + "x" * 48)
+os.environ["COOKIE_SECURE"] = "false"
+os.environ["DISABLE_SCHEDULER"] = "true"
 os.environ["DATABASE_PATH"] = os.path.join(_TEMP.name, "test.db")
 with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
     import app as watchtower
@@ -14,9 +18,17 @@ class TelegramStatusTests(unittest.TestCase):
     def setUp(self):
         with watchtower.db() as c:
             c.execute("DELETE FROM sites")
-        self.network = patch.object(watchtower.requests, "get", side_effect=AssertionError("Real HTTP forbidden"))
+        self.network = patch.object(
+            watchtower.requests,
+            "get",
+            side_effect=AssertionError("Real HTTP forbidden"),
+        )
         self.network.start()
-        self.post = patch.object(watchtower.requests, "post", side_effect=AssertionError("Real Telegram forbidden"))
+        self.post = patch.object(
+            watchtower.requests,
+            "post",
+            side_effect=AssertionError("Real Telegram forbidden"),
+        )
         self.post.start()
         self.fetch = patch.object(watchtower, "fetch_site", return_value="same content")
         self.fetch_mock = self.fetch.start()
@@ -28,7 +40,14 @@ class TelegramStatusTests(unittest.TestCase):
         with watchtower.db() as c:
             return c.execute(
                 "INSERT INTO sites(name,url,channels,enabled,last_checked,created_at) VALUES(?,?,?,?,?,?)",
-                (name, "https://example.com/" + name, channels, enabled, checked, watchtower.now())
+                (
+                    name,
+                    "https://example.com/" + name,
+                    channels,
+                    enabled,
+                    checked,
+                    watchtower.now(),
+                ),
             ).lastrowid
 
     def report(self):
@@ -91,40 +110,69 @@ class TelegramStatusTests(unittest.TestCase):
         watchtower.run_checks([a])
         self.send_mock.reset_mock()
         self.fetch_mock.return_value = "changed content"
-        with patch.dict(watchtower.SENDERS, {"telegram": Mock(), "email": Mock()}) as senders:
+        with patch.dict(
+            watchtower.SENDERS, {"telegram": Mock(), "email": Mock()}
+        ) as senders:
             watchtower.run_checks([a])
             senders["telegram"].assert_not_called()
             senders["email"].assert_called_once()
         self.send_mock.assert_called_once()
         self.assertIn("内容变化", self.report())
         with watchtower.db() as c:
-            self.assertEqual(c.execute("SELECT COUNT(*) FROM events WHERE event_type='网页内容变化'").fetchone()[0], 1)
+            self.assertEqual(
+                c.execute(
+                    "SELECT COUNT(*) FROM events WHERE event_type='网页内容变化'"
+                ).fetchone()[0],
+                1,
+            )
 
     def test_split_preserves_all_sites_and_failure_is_audited(self):
         ids = [self.add("site" + str(i) + "x" * 155) for i in range(30)]
         watchtower.run_checks(ids)
         self.assertGreater(self.send_mock.call_count, 1)
-        self.assertTrue(all(len(call.args[0]) < 4000 for call in self.send_mock.call_args_list))
+        self.assertTrue(
+            all(len(call.args[0]) < 4000 for call in self.send_mock.call_args_list)
+        )
         for i in range(30):
             self.assertIn("https://example.com/site" + str(i) + "x", self.report())
         self.send_mock.side_effect = RuntimeError("fake secret URL")
         watchtower.run_checks(ids)
         with watchtower.db() as c:
-            row = c.execute("SELECT status,detail FROM notifications ORDER BY id DESC LIMIT 1").fetchone()
+            row = c.execute(
+                "SELECT status,detail FROM notifications ORDER BY id DESC LIMIT 1"
+            ).fetchone()
             self.assertEqual(row["status"], "failed")
             self.assertNotIn("secret", row["detail"])
-            self.assertEqual(c.execute("SELECT COUNT(*) FROM sites WHERE last_status='OK'").fetchone()[0], 30)
+            self.assertEqual(
+                c.execute(
+                    "SELECT COUNT(*) FROM sites WHERE last_status='OK'"
+                ).fetchone()[0],
+                30,
+            )
 
     def test_manual_routes_and_lock(self):
         a = self.add("A")
         self.add("B")
-        with watchtower.app.test_client() as client:
+        with watchtower.app.test_client() as client, patch.object(
+            watchtower.accounts, "current_user", return_value={"id": 999, "is_admin": 1}
+        ):
             with client.session_transaction() as session:
-                session["logged_in"] = True
-            self.assertEqual(client.get(f"/sites/{a}/check").status_code, 302)
+                session["csrf_token"] = "offline-csrf"
+            self.assertEqual(client.get(f"/sites/{a}/check").status_code, 405)
+            self.assertEqual(
+                client.post(
+                    f"/sites/{a}/check", data={"csrf_token": "offline-csrf"}
+                ).status_code,
+                302,
+            )
             self.assertIn("本轮未检查", self.report())
             self.send_mock.reset_mock()
-            self.assertEqual(client.get("/check-all").status_code, 302)
+            self.assertEqual(
+                client.post(
+                    "/check-all", data={"csrf_token": "offline-csrf"}
+                ).status_code,
+                302,
+            )
             self.send_mock.assert_called_once()
         self.assertFalse(watchtower.check_lock.locked())
         watchtower.check_lock.acquire()
@@ -139,8 +187,9 @@ class TelegramStatusTests(unittest.TestCase):
         self.sender.stop()
         response = Mock()
         response.json.return_value = {"ok": False}
-        with patch.dict(os.environ, TELEGRAM_BOT_TOKEN="fake", TELEGRAM_CHAT_ID="fake"), \
-                patch.object(watchtower.requests, "post", return_value=response):
+        with patch.dict(
+            os.environ, TELEGRAM_BOT_TOKEN="fake", TELEGRAM_CHAT_ID="fake"
+        ), patch.object(watchtower.requests, "post", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "ok=false"):
                 watchtower.send_telegram("test")
 
